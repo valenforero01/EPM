@@ -319,7 +319,7 @@ const ADMIN_USER = 'ADMINISTRADOR';
 const ADMIN_PASS = '823027';
 // URL del webhook de n8n para "Enviar copia a mi correo". Se puede cambiar desde
 // Consola de trabajadores > Motor de reglas > Integraciones (queda guardada en el navegador).
-const N8N_WEBHOOK_DEFAULT = '';
+const N8N_WEBHOOK_DEFAULT = 'https://valentinaforero.app.n8n.cloud/webhook';
 const MAX_FAILS = 3, LOCK_MS = 30000;
 const IDLE_WARN_MS = 9 * 60000, IDLE_MAX_MS = 10 * 60000;
 const STORE_KEY = 'epm360_data_v4', SESSION_KEY = 'epm360_session_v4', PREF_KEY = 'epm360_prefs_v4';
@@ -566,7 +566,7 @@ function genData() {
     });
   });
 
-  const data = { clients, invoices, requests: [], emails: [], audit: [], config: { ...DEFAULT_CONFIG }, seq: 0, n8n: { base: N8N_WEBHOOK_DEFAULT, notificarEstados: true, usarAPIs: false, correoSupervisor: '' } };
+  const data = { clients, invoices, requests: [], emails: [], audit: [], config: { ...DEFAULT_CONFIG }, seq: 0, n8n: { base: N8N_WEBHOOK_DEFAULT, notificarEstados: true, usarAPIs: !!N8N_WEBHOOK_DEFAULT, correoSupervisor: '' } };
 
   /* --- Solicitudes con historial coherente --- */
   plan.sort((a, b) => a.rad - b.rad);
@@ -909,7 +909,14 @@ function constanciaHTML(req) {
    Si no hay URL base configurada, todo funciona en modo simulado dentro de la app. */
 const N8N_PATHS = { copia: 'epm/copia-solicitud', estado: 'epm/estado-reclamacion', recaudo: 'epm/api/consulta-recaudo', ami: 'epm/api/lectura-ami', alertas: 'epm/alertas-sla' };
 const N8N_LABELS = { copia: 'Copia de la solicitud', estado: 'Correo de cambio de estado', recaudo: 'API de recaudo', ami: 'API de lectura AMI', alertas: 'Resumen de alertas SLA' };
-function n8nCfg() { if (!S.n8n) S.n8n = { base: '', notificarEstados: true, usarAPIs: false, correoSupervisor: '' }; return S.n8n; }
+const fixBase = u => String(u || '').trim().replace(/\/+$/, '').replace(/\/(workflow|workflows|home)(\/.*)?$/, '/webhook').replace(/\/webhook(-test)?\/.+$/, '/webhook$1');
+function n8nCfg() {
+  if (!S.n8n) S.n8n = { base: '', notificarEstados: true, usarAPIs: true, correoSupervisor: '' };
+  // Si no hay URL guardada en este navegador, se usa la URL fija del código (N8N_WEBHOOK_DEFAULT)
+  if (!S.n8n.base && N8N_WEBHOOK_DEFAULT && !S.n8n.desactivado) { S.n8n.base = fixBase(N8N_WEBHOOK_DEFAULT); S.n8n.usarAPIs = true; S.n8n.notificarEstados = true; }
+  if (S.n8n.base) S.n8n.base = fixBase(S.n8n.base);
+  return S.n8n;
+}
 function n8nUrl(k) { const b = (n8nCfg().base || '').trim().replace(/\/+$/, ''); return b ? `${b}/${N8N_PATHS[k]}` : ''; }
 async function n8nPost(k, payload, { timeout = 9000 } = {}) {
   const url = n8nUrl(k); if (!url) return { ok: false, simulated: true };
@@ -1014,7 +1021,8 @@ A.saveN8N = () => {
   if (b && !/^https?:\/\/\S+$/.test(b)) { setErr('n8n-base', 'Ingresa una URL válida (https://…/webhook).'); ok = false; }
   if (sup && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(sup)) { setErr('n8n-sup', 'Correo no válido.'); ok = false; }
   if (!ok) return;
-  Object.assign(n8nCfg(), { base: b.replace(/\/+$/, ''), correoSupervisor: sup, notificarEstados: $('#n8n-est').checked, usarAPIs: $('#n8n-api').checked });
+  const fixed = fixBase(b); if (b && fixed !== b.replace(/\/+$/, '')) toast(`URL corregida a <b>${esc(fixed)}</b> (debe terminar en /webhook).`, 'info');
+  Object.assign(n8nCfg(), { base: fixed, desactivado: !b, correoSupervisor: sup, notificarEstados: $('#n8n-est').checked, usarAPIs: $('#n8n-api').checked });
   addAudit('Integración n8n', b ? `URL base configurada · estados ${n8nCfg().notificarEstados ? 'sí' : 'no'} · APIs ${n8nCfg().usarAPIs ? 'sí' : 'no'}` : 'Modo simulado'); save(); toast('Configuración de n8n guardada.'); render();
 };
 function n8nCard() {
@@ -1825,3 +1833,4 @@ window.addEventListener('storage', e => { if (e.key === STORE_KEY) { loadData();
 
 loadPrefs(); loadData(); loadSession(); render();
 </script></body></html>
+
