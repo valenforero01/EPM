@@ -1,0 +1,6 @@
+{
+  "name": "EPM – Portal Corporativo y PQR 360",
+  "description": "Prototipo académico del sitio institucional de EPM, consola administrativa y portal de autogestión PQR 360 (proceso TO-BE por cobros improcedentes).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
