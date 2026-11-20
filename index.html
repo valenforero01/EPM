@@ -680,7 +680,7 @@ function genData() {
 
 function makeEmail(req, c, kind, fecha) {
   const r = kind === 'respuesta';
-  return { id: uid(), reqId: req.id, para: c.correo, nombre: c.nombre, fecha: fecha || nowISO(), via: 'Simulado', asunto: r ? `Respuesta a tu solicitud ${req.id}` : `Constancia de radicación ${req.id}`,
+  return { id: uid(), reqId: req.id, para: req.correoNotif || c.correo, nombre: c.nombre, fecha: fecha || nowISO(), via: 'Simulado', asunto: r ? `Respuesta a tu solicitud ${req.id}` : `Constancia de radicación ${req.id}`,
     cuerpo: r ? `Hola ${firstName(c.nombre)}:\n\nTu solicitud ${req.id} (${req.tipo}, ${monthLabel(req.mes)}) fue resuelta con resultado: ${req.resultado?.decision}.\n${req.resultado?.justificacion || ''}\n\nAdjuntamos la constancia en PDF.\n\nEPM – Atención al cliente (prototipo académico)` : `Hola ${firstName(c.nombre)}:\n\nRecibimos tu solicitud ${req.id} del ${fmtDate(req.fechaRadicacion)} por "${req.tipo}" del periodo ${monthLabel(req.mes)}.\nFecha límite de respuesta: ${fmtDate(req.fechaLimite)} (15 días hábiles).\n\nAdjuntamos copia en PDF de tu radicación.\n\nEPM – Atención al cliente (prototipo académico)`, adjunto: `${r ? 'Respuesta' : 'Radicacion'}_${req.id}.pdf` };
 }
 /* ================= ESTADO GLOBAL Y PERSISTENCIA ================= */
@@ -713,6 +713,7 @@ const invOf = cid => S.invoices.filter(i => i.clientId === cid).sort((a, b) => a
 const reqsOf = cid => S.requests.filter(r => r.clientId === cid);
 const me = () => session && session.role === 'cliente' ? clientById(session.clientId) : null;
 const isOpen = r => OPEN_STATES.includes(r.estado);
+const mailOf = r => (r && r.correoNotif) || clientById(r.clientId).correo;
 const slaDay = r => bizBetween(r.fechaRadicacion, r.fechaResolucion || r.fechaCierre || TODAY);
 const slaLevel = d => d >= S.config.dictamen ? 'red' : d >= S.config.alerta ? 'yellow' : 'green';
 function clientAvg(cid, excl) { const h = S.invoices.filter(i => i.clientId === cid && i.mes !== excl); return h.length ? h.reduce((s, i) => s + i.consumo, 0) / h.length : 0; }
@@ -778,7 +779,7 @@ function createRequest(d) {
   const T = k => new Date(t0.getTime() + k * 4000).toISOString();
   const req = { id, clientId: client.id, tipo: d.tipo, mes: inv.mes, invoiceId: inv.id, valorFacturado: inv.total, valorReclamado: d.valorReclamado, canal: d.canal, estado: 'RADICADA', fechaRadicacion: iso(t0), fechaLimite: iso(addBiz(t0, S.config.sla)), fechaResolucion: null, fechaCierre: null, responsable: 'Automático (STP)', auto: true, prioridad: false, resultado: null, eventos: [], notas: [], mensajes: [], visita: null, cierre: null,
     soportes: { comprobante: !!d.comprobante, fotoMedidor: !!d.foto, lecturaOCR: d.lectura || inv.lecturaActual, referencia: d.referencia || '', fechaPagoDeclarada: d.fechaPago || '' },
-    autorizaCorreo: !!d.autorizaCorreo, contacto: d.contacto || '', descripcion: d.descripcion || '', nombreDeclarado: d.nombre };
+    autorizaCorreo: !!d.autorizaCorreo, correoNotif: d.correoNotif || '', contacto: d.contacto || '', descripcion: d.descripcion || '', nombreDeclarado: d.nombre };
   req.eventos.push({ fecha: T(0), titulo: 'Solicitud radicada', detalle: `Canal: ${d.canal}. Radicado ${id}.`, actor: d.deOficio ? ADMIN_USER : 'Cliente' });
   req.eventos.push({ fecha: T(1), titulo: 'Lectura de soportes (OCR)', detalle: d.tipo.startsWith('Reconexión') ? `Comprobante leído${d.referencia ? ': referencia ' + d.referencia : ''}${d.fechaPago ? ', fecha de pago ' + fmtDate(d.fechaPago) : ''}.` : `Foto del medidor procesada: lectura ${fmtNum(d.lectura || inv.lecturaActual)}.`, actor: 'Sistema' });
   req.eventos.push({ fecha: T(2), titulo: 'Consulta de recaudo e histórico', detalle: d.tipo.startsWith('Reconexión') ? (d.recaudo ? `API de recaudo (${d.recaudo.fuente || 'n8n'}): ${d.recaudo.pagoRegistrado ? 'pago registrado el ' + fmtDate(d.recaudo.fechaPago) : 'sin pago registrado'}; corte ${fmtDate(inv.fechaCorte)}.${d.recaudo.mensaje ? ' ' + d.recaudo.mensaje : ''}` : inv.fechaPago ? `API de recaudo: pago registrado el ${fmtDate(inv.fechaPago)}; corte programado ${fmtDate(inv.fechaCorte)}.` : 'API de recaudo: sin pago registrado.') : `Histórico de 6 meses consultado (promedio ${fmtNum(clientAvg(client.id, inv.mes))} ${inv.unidad}).`, actor: 'Sistema' });
@@ -936,20 +937,20 @@ function reqPayload(req) {
     resultado: { decision: r.decision || '', regla: r.regla || '', justificacion: r.justificacion || '', valorAjustado: r.valorAjustado || 0, valorAPagar: r.valorAPagar ?? req.valorFacturado },
     visita: req.visita ? { fecha: fmtDate(req.visita.fecha), franja: req.visita.franja, cuadrilla: req.visita.cuadrilla, estado: req.visita.estado } : null,
     ultimoEvento: { titulo: ult.titulo || '', detalle: ult.detalle || '', fecha: fmtDT(ult.fecha) },
-    cliente: { nombre: c.nombre, correo: c.correo, telefono: c.telefono, contrato: c.contrato, servicio: c.servicio, canalPreferido: c.canal } };
+    cliente: { nombre: c.nombre, correo: mailOf(req), correoRegistrado: c.correo, telefono: c.telefono, contrato: c.contrato, servicio: c.servicio, canalPreferido: c.canal } };
 }
 
 /* 1) Copia de la solicitud (botón "Enviar copia a mi correo") */
 async function sendCopyToN8N(reqId, actor) {
   const req = reqById(reqId); if (!req) return;
   if (!req.autorizaCorreo) { toast('El cliente no autorizó el envío de la copia al correo.', 'warn'); return; }
-  const c = clientById(req.clientId);
+  const c = clientById(req.clientId); const dest = mailOf(req);
   const r = await n8nPost('copia', { ...reqPayload(req), evento: 'copia_solicitud_pqr', asunto: `Copia de tu solicitud ${req.id} – EPM`, constanciaHTML: constanciaHTML(req) });
   const via = viaLabel(r);
   if (!r.ok && !r.simulated) { toast('No se pudo contactar n8n. Verifica la URL base y que el flujo esté activo.', 'err'); addAudit('Error de integración n8n', `${req.id}: copia de solicitud`, 'Sistema'); save(); return false; }
   const em = makeEmail(req, c, 'radicacion'); em.asunto = `Copia de tu solicitud ${req.id}`; em.via = via; S.emails.unshift(em);
-  addEvent(req, 'Copia enviada al correo', `${c.correo} · ${via}`, actor || 'Cliente'); addAudit('Envío de PDF por correo', `${req.id} → ${c.correo} (${via})`, actor || c.nombre); save();
-  toast(r.simulated ? `Copia registrada para <b>${esc(c.correo)}</b> (modo simulado: configura n8n para enviarla).` : r.opaque ? 'Copia enviada a n8n (sin confirmación por CORS).' : `Copia enviada a <b>${esc(c.correo)}</b> por n8n.`, r.simulated ? 'info' : r.opaque ? 'warn' : 'ok');
+  addEvent(req, 'Copia enviada al correo', `${dest} · ${via}`, actor || 'Cliente'); addAudit('Envío de PDF por correo', `${req.id} → ${dest} (${via})`, actor || c.nombre); save();
+  toast(r.simulated ? `Copia registrada para <b>${esc(dest)}</b> (modo simulado: configura n8n para enviarla).` : r.opaque ? 'Copia enviada a n8n (sin confirmación por CORS).' : `Copia enviada a <b>${esc(dest)}</b> por n8n.`, r.simulated ? 'info' : r.opaque ? 'warn' : 'ok');
   return true;
 }
 
@@ -957,9 +958,9 @@ async function sendCopyToN8N(reqId, actor) {
 function notifyStatus(req, evento, detalle) {
   const cfg = n8nCfg(); if (!req.autorizaCorreo || !cfg.notificarEstados) return;
   const c = clientById(req.clientId); const payload = { ...reqPayload(req), evento, detalleEvento: detalle || '' };
-  const em = { id: uid(), reqId: req.id, para: c.correo, nombre: c.nombre, fecha: nowISO(), via: 'Enviando…', asunto: `${req.id}: ${evento} – ${ESTADOS[req.estado].label}`, cuerpo: `Hola ${firstName(c.nombre)}:\n\n${evento}.${detalle ? ' ' + detalle : ''}\n\nEstado actual: ${ESTADOS[req.estado].label}\n${req.resultado?.decision ? 'Decisión: ' + req.resultado.decision + '\n' : ''}${req.resultado?.valorAjustado ? 'Valor ajustado: ' + fmtCOP(req.resultado.valorAjustado) + '\n' : ''}Fecha límite de respuesta: ${fmtDate(req.fechaLimite)}\n\nEPM – Atención al cliente (prototipo académico)`, adjunto: `Estado_${req.id}.pdf` };
+  const em = { id: uid(), reqId: req.id, para: mailOf(req), nombre: c.nombre, fecha: nowISO(), via: 'Enviando…', asunto: `${req.id}: ${evento} – ${ESTADOS[req.estado].label}`, cuerpo: `Hola ${firstName(c.nombre)}:\n\n${evento}.${detalle ? ' ' + detalle : ''}\n\nEstado actual: ${ESTADOS[req.estado].label}\n${req.resultado?.decision ? 'Decisión: ' + req.resultado.decision + '\n' : ''}${req.resultado?.valorAjustado ? 'Valor ajustado: ' + fmtCOP(req.resultado.valorAjustado) + '\n' : ''}Fecha límite de respuesta: ${fmtDate(req.fechaLimite)}\n\nEPM – Atención al cliente (prototipo académico)`, adjunto: `Estado_${req.id}.pdf` };
   S.emails.unshift(em);
-  n8nPost('estado', payload).then(r => { em.via = viaLabel(r); addAudit('Correo de estado al cliente', `${req.id} → ${c.correo}: ${evento} (${em.via})`, 'Sistema'); save(); });
+  n8nPost('estado', payload).then(r => { em.via = viaLabel(r); addAudit('Correo de estado al cliente', `${req.id} → ${mailOf(req)}: ${evento} (${em.via})`, 'Sistema'); save(); });
 }
 
 /* 3) API de recaudo (se usa al radicar reconexiones si está activada) */
@@ -1293,7 +1294,7 @@ function clientReqHTML(id) {
 function copyBox(r) {
   const c = clientById(r.clientId);
   if (!r.autorizaCorreo) return `<div class="alert alert-info mt">${icon('mail')}<div>No autorizaste el envío de copia al correo para esta solicitud.</div></div>`;
-  return `<div class="n8n-box"><div class="row between"><div><b>${icon('mail', 16)} Copia de la solicitud al correo</b><div class="xs mu">Autorizaste el envío a <b>${esc(c.correo)}</b>. El botón envía la solicitud al flujo de n8n que genera y despacha el correo.</div></div><button class="btn btn-n8n btn-sm" onclick="A.sendCopy('${r.id}',this)">${icon('send', 15)} Enviar copia a mi correo</button></div></div>`;
+  return `<div class="n8n-box"><div class="row between"><div><b>${icon('mail', 16)} Copia de la solicitud al correo</b><div class="xs mu">Autorizaste el envío a <b>${esc(mailOf(r))}</b>. El botón envía la solicitud al flujo de n8n que genera y despacha el correo.</div></div><button class="btn btn-n8n btn-sm" onclick="A.sendCopy('${r.id}',this)">${icon('send', 15)} Enviar copia a mi correo</button></div></div>`;
 }
 A.sendCopy = async (id, btn) => { if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Enviando…'; } await sendCopyToN8N(id, session?.role === 'admin' ? ADMIN_USER : undefined); if (btn) { btn.disabled = false; btn.innerHTML = `${icon('check', 15)} Enviar de nuevo`; } };
 
@@ -1361,7 +1362,8 @@ function renderClientFile() {
    <fieldset class="fsec"><legend>4. Descripción y autorizaciones</legend>
     ${field('f-desc', 'Descripción de los hechos', `<textarea id="f-desc" class="input" rows="4" maxlength="500" oninput="$('#desc-n').textContent=this.value.length"></textarea>`, '<span id="desc-n">0</span>/500 caracteres (mínimo 20).', true)}
     <div class="field"><label class="check"><input type="checkbox" id="f-hd"> <span>Autorizo el tratamiento de mis datos personales conforme a la Ley 1581 de 2012 para gestionar esta solicitud. <span class="req">*</span></span></label><div class="err" id="f-hd-err"></div></div>
-    <div class="field"><label class="check"><input type="checkbox" id="f-mail" checked> <span><b>Autorizo el envío de una copia de mi solicitud (PDF) al correo ${esc(c.correo)}.</b> Al radicar aparecerá el botón "Enviar copia a mi correo".</span></label></div>
+    <div class="field"><label class="check"><input type="checkbox" id="f-mail" checked onchange="$('#f-email-wrap').hidden=!this.checked"> <span><b>Autorizo el envío de una copia de mi solicitud (PDF) y de las notificaciones de estado a mi correo.</b> Al radicar aparecerá el botón "Enviar copia a mi correo".</span></label></div>
+    <div id="f-email-wrap">${field('f-email', 'Correo para recibir la copia y las notificaciones', `<input id="f-email" type="email" class="input" value="${esc(c.correo)}" maxlength="80" autocomplete="email">`, 'Puedes cambiarlo por el correo donde quieres recibir los mensajes de esta solicitud.', true)}</div>
    </fieldset>
    <div class="row between"><span class="xs mu">Tiempo estimado: menos de 1 minuto.</span><div class="row"><button type="button" class="btn btn-ghost" onclick="A.resetForm()">Limpiar</button><button class="btn btn-primary">${icon('send', 16)} Radicar solicitud</button></div></div>
   </form>`);
@@ -1370,7 +1372,7 @@ function invHint(i) { return `${icon('receipt')}<div>Factura ${monthLabel(i.mes)
 const selInv = () => invOf(me().id).find(i => i.mes === $('#f-mes').value);
 A.mesChange = () => { const i = selInv(); $('#f-vfact').value = fmtCOP(i.total); $('#inv-hint').innerHTML = invHint(i); $('#f-lect').placeholder = 'Ej. ' + i.lecturaActual; A.tipoChange(); };
 A.tipoChange = () => { const t = $('#f-tipo').value, i = selInv(); if (t.startsWith('Reconexión')) { const rc = i.adicionales.find(a => /Reconexi/.test(a.concepto)); if (rc && !$('#f-vrec').value) $('#f-vrec').value = rc.valor; if (i.fechaPago && !$('#f-fpago').value) $('#f-fpago').value = i.fechaPago; } };
-A.canalChange = () => { const c = me(), v = $('#f-canal').value; $('#f-contacto').value = v === 'Correo electrónico' ? c.correo : c.telefono; };
+A.canalChange = () => { const c = me(), v = $('#f-canal').value; $('#f-contacto').value = v === 'Correo electrónico' ? ($('#f-email')?.value || c.correo) : c.telefono; };
 A.resetForm = () => { ui.prefill = null; ui.files = {}; render(); };
 A.fileSel = (inp, k) => { const f = inp.files[0]; if (!f) return; if (f.size > 5e6) { toast('El archivo supera 5 MB.', 'err'); inp.value = ''; return; } const prev = $(k === 'foto' ? '#prev-foto' : '#prev-comp'); if (f.type === 'application/pdf') { ui.files[k] = sampleReceiptSVG('PDF: ' + f.name.slice(0, 18), '—', '—'); } const rd = new FileReader(); rd.onload = () => { if (f.type !== 'application/pdf') ui.files[k] = rd.result; prev.src = ui.files[k]; prev.hidden = false; }; rd.readAsDataURL(f); setErr('f-' + k, ''); };
 A.sampleFile = k => { const i = selInv(); if (k === 'foto') { const v = $('#f-lect').value || i.lecturaActual; ui.files.foto = sampleMeterSVG(v, i.unidad); if (!$('#f-lect').value) $('#f-lect').value = v; } else { const ref = $('#f-ref').value || 'PSE-' + (10000000 + hashStr(i.id) % 89999999); if (!$('#f-ref').value) $('#f-ref').value = ref; ui.files.comp = sampleReceiptSVG(ref, fmtDate($('#f-fpago').value || i.fechaPago || TODAY), fmtCOP(i.total)); } const p = $(k === 'foto' ? '#prev-foto' : '#prev-comp'); p.src = ui.files[k]; p.hidden = false; setErr('f-' + k, ''); };
@@ -1391,9 +1393,10 @@ A.submitPQR = e => {
   if (isLE) { const l = Number(v('f-lect').replace(/\D/g, '')); if (!v('f-lect')) E('f-lect', 'Ingresa la lectura que marca tu medidor.'); else if (l < inv.lecturaAnterior) E('f-lect', `La lectura no puede ser menor a la anterior facturada (${fmtNum(inv.lecturaAnterior)}).`); if (!ui.files.foto) E('f-foto', 'Adjunta una foto del medidor.'); }
   if (v('f-desc').length < 20) E('f-desc', 'Describe los hechos con al menos 20 caracteres.');
   if (!$('#f-hd').checked) E('f-hd', 'Debes autorizar el tratamiento de datos para radicar.');
+  if ($('#f-mail').checked && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v('f-email'))) E('f-email', 'Ingresa un correo válido para recibir la copia (ej. nombre@gmail.com).');
   if (S.requests.some(r => r.clientId === c.id && r.mes === inv.mes && r.tipo === tipo && isOpen(r))) E('f-tipo', 'Ya tienes una solicitud abierta por este mismo cobro y periodo.');
   if (errs.length) { toast(`Revisa ${errs.length} campo${errs.length > 1 ? 's' : ''} marcado${errs.length > 1 ? 's' : ''} en rojo.`, 'err'); $('#' + errs[0])?.focus(); return false; }
-  const data = { client: c, inv, tipo, canal: 'Portal web', nombre: v('f-nombre'), contacto: `${canal}: ${contacto}`, valorReclamado: vr, fechaPago: isRC ? v('f-fpago') : '', referencia: v('f-ref'), lectura: Number(v('f-lect').replace(/\D/g, '')) || 0, descripcion: v('f-desc'), autorizaCorreo: $('#f-mail').checked, foto: !!ui.files.foto, comprobante: !!ui.files.comp };
+  const data = { client: c, inv, tipo, canal: 'Portal web', nombre: v('f-nombre'), contacto: `${canal}: ${contacto}`, valorReclamado: vr, fechaPago: isRC ? v('f-fpago') : '', referencia: v('f-ref'), lectura: Number(v('f-lect').replace(/\D/g, '')) || 0, descripcion: v('f-desc'), autorizaCorreo: $('#f-mail').checked, correoNotif: $('#f-mail').checked ? v('f-email') : '', foto: !!ui.files.foto, comprobante: !!ui.files.comp };
   runProcessing(data); return false;
 };
 function runProcessing(data) {
@@ -1586,7 +1589,7 @@ function reqDrawer(id) {
   </div>
   <div class="card mt"><h3>${icon('cpu', 16)} Resultado del motor de reglas</h3><p class="b" style="margin:0">${esc(res.decision || '—')} <span class="tag">${esc(res.regla || '')}</span></p><p class="sm mu">${esc(res.justificacion || '')}</p>${res.valorAjustado ? `<p class="sm b">Valor ajustado: ${fmtCOP(res.valorAjustado)} · Valor a pagar: ${fmtCOP(res.valorAPagar)}</p>` : ''}</div>
   <div class="card mt"><h3>${icon('upload', 16)} Soportes adjuntos (simulados)</h3><div class="row">${r.soportes.comprobante ? `<div class="sm"><img src="${sampleReceiptSVG(r.soportes.referencia || 'REF', fmtDate(inv.fechaPago), fmtCOP(inv.total))}" width="110" height="110" alt="Comprobante de pago" style="border-radius:8px;border:1px solid var(--bd)"><br>Comprobante · ref. ${esc(r.soportes.referencia)}</div>` : ''}${r.soportes.fotoMedidor ? `<div class="sm"><img src="${sampleMeterSVG(r.soportes.lecturaOCR, inv.unidad)}" width="110" height="110" alt="Foto del medidor" style="border-radius:8px;border:1px solid var(--bd)"><br>Foto medidor · OCR: ${fmtNum(r.soportes.lecturaOCR)}</div>` : ''}${!r.soportes.comprobante && !r.soportes.fotoMedidor ? '<span class="sm mu">Sin soportes adjuntos.</span>' : ''}</div>${r.descripcion ? `<p class="sm mt"><b>Descripción del cliente:</b> ${esc(r.descripcion)}</p>` : ''}</div>
-  <div class="card mt"><h3>${icon('mail', 16)} Envío de PDF al correo</h3>${r.autorizaCorreo ? `<p class="sm">El cliente <b>autorizó</b> el envío a ${esc(c.correo)}.</p><button class="btn btn-n8n btn-sm" onclick="A.sendCopy('${r.id}',this)">${icon('send', 15)} Enviar copia (n8n)</button> <button class="btn btn-ghost btn-sm" onclick="printDoc(constanciaHTML(reqById('${r.id}')))">${icon('printer', 15)} Ver PDF</button>` : `<p class="sm mu">El cliente no autorizó el envío de copias al correo.</p><button class="btn btn-ghost btn-sm" onclick="printDoc(constanciaHTML(reqById('${r.id}')))">${icon('printer', 15)} Ver PDF</button>`}</div>
+  <div class="card mt"><h3>${icon('mail', 16)} Envío de PDF al correo</h3>${r.autorizaCorreo ? `<p class="sm">El cliente <b>autorizó</b> el envío a ${esc(mailOf(r))}.</p><button class="btn btn-n8n btn-sm" onclick="A.sendCopy('${r.id}',this)">${icon('send', 15)} Enviar copia (n8n)</button> <button class="btn btn-ghost btn-sm" onclick="printDoc(constanciaHTML(reqById('${r.id}')))">${icon('printer', 15)} Ver PDF</button>` : `<p class="sm mu">El cliente no autorizó el envío de copias al correo.</p><button class="btn btn-ghost btn-sm" onclick="printDoc(constanciaHTML(reqById('${r.id}')))">${icon('printer', 15)} Ver PDF</button>`}</div>
   ${closed ? '' : `<div class="card mt" style="border:2px solid var(--g)"><h3>${icon('wrench', 16)} Acciones del trabajador</h3>
    <div class="fgrid">
     ${field('ac-st', 'Cambiar estado', `<div class="row" style="flex-wrap:nowrap"><select id="ac-st" class="input">${opts(Object.keys(ESTADOS).map(k => [k, ESTADOS[k].label]), r.estado)}</select><button class="btn btn-ghost btn-sm" onclick="A.changeState('${r.id}',$('#ac-st').value)">Aplicar</button></div>`)}
